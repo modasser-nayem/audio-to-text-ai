@@ -1,0 +1,371 @@
+<!DOCTYPE html>
+<html>
+   <head>
+      <meta charset="utf-8" />
+      <title>Live Voice → Realtime WS Transcription Test</title>
+      <meta
+         name="viewport"
+         content="width=device-width,initial-scale=1"
+      />
+      <style>
+         body {
+            font-family: Inter, system-ui, Arial;
+            max-width: 720px;
+            margin: 28px auto;
+            padding: 18px;
+         }
+         button {
+            padding: 10px 14px;
+            margin-right: 8px;
+            font-size: 14px;
+         }
+         #status {
+            display: inline-block;
+            margin-left: 12px;
+            font-weight: 600;
+         }
+         .status-on {
+            color: green;
+         }
+         .status-off {
+            color: #b00;
+         }
+         #partial {
+            color: #0b66ff;
+            font-weight: 600;
+            min-height: 24px;
+         }
+         #final {
+            margin-top: 12px;
+            white-space: pre-wrap;
+            border: 1px solid #eee;
+            padding: 12px;
+            min-height: 160px;
+            background: #fafafa;
+         }
+         #log {
+            margin-top: 10px;
+            color: #666;
+            font-size: 12px;
+            max-height: 120px;
+            overflow: auto;
+            background: #fff;
+            border: 1px solid #f0f0f0;
+            padding: 8px;
+         }
+      </style>
+   </head>
+   <body>
+      <h2>Live Voice → Realtime Transcription Test</h2>
+
+      <p>
+         WebSocket:
+         <input
+            id="wsUrl"
+            style="width: 360px"
+            value="ws://localhost:8080/ws"
+         />
+         <button id="connectBtn">Connect</button>
+         <span
+            id="status"
+            class="status-off"
+            >Disconnected</span
+         >
+      </p>
+
+      <p>
+         <button
+            id="startBtn"
+            disabled
+         >
+            Start Mic
+         </button>
+         <button
+            id="stopBtn"
+            disabled
+         >
+            Stop Mic
+         </button>
+         <button
+            id="closeBtn"
+            disabled
+         >
+            Close Connection
+         </button>
+      </p>
+
+      <div>
+         <div id="partial">Partial output will appear here...</div>
+         <div id="final"></div>
+      </div>
+
+      <div id="log"></div>
+
+      <script>
+         (async function () {
+            const connectBtn = document.getElementById("connectBtn");
+            const startBtn = document.getElementById("startBtn");
+            const stopBtn = document.getElementById("stopBtn");
+            const closeBtn = document.getElementById("closeBtn");
+            const statusEl = document.getElementById("status");
+            const partialEl = document.getElementById("partial");
+            const finalEl = document.getElementById("final");
+            const logEl = document.getElementById("log");
+            const wsUrlInput = document.getElementById("wsUrl");
+
+            let ws = null;
+            let mediaStream = null;
+            let mediaRecorder = null;
+            let sending = false;
+
+            function log(...args) {
+               console.log(...args);
+               logEl.textContent +=
+                  args
+                     .map((a) =>
+                        typeof a === "string" ? a : JSON.stringify(a)
+                     )
+                     .join(" ") + "\\n";
+               logEl.scrollTop = logEl.scrollHeight;
+            }
+
+            function setStatus(connected) {
+               statusEl.textContent = connected ? "Connected" : "Disconnected";
+               statusEl.className = connected ? "status-on" : "status-off";
+               startBtn.disabled = !connected;
+               closeBtn.disabled = !connected;
+            }
+
+            function handleIncomingMessage(msg) {
+               // msg may be string or binary depending on server
+               try {
+                  const str =
+                     typeof msg === "string"
+                        ? msg
+                        : new TextDecoder().decode(msg);
+                  // attempt JSON decode
+                  let obj;
+                  try {
+                     obj = JSON.parse(str);
+                  } catch (e) {
+                     obj = null;
+                  }
+
+                  // If server sends JSON envelopes with type keys, handle them
+                  if (obj && obj.type) {
+                     // example: { type: 'partial', text: 'hello' } or { type: 'final', text: 'hello world' }
+                     if (
+                        obj.type === "partial" ||
+                        obj.type === "transcript.delta"
+                     ) {
+                        partialEl.textContent = obj.text ?? obj.delta ?? "";
+                     } else if (
+                        obj.type === "final" ||
+                        obj.type === "transcript.final"
+                     ) {
+                        // append final
+                        finalEl.textContent +=
+                           (obj.text ?? obj.transcript ?? "") + "\\n";
+                        partialEl.textContent = "";
+                     } else {
+                        // unknown typed JSON - show in log
+                        log("MSG(JSON):", obj);
+                     }
+                  } else {
+                     // Not JSON - server might send plain text fragments. We'll append them as partial.
+                     // If server sends full transcript strings or SSE fragments, we'll show them
+                     partialEl.textContent = str;
+                     // Try to detect "[DONE]" sentinel
+                     if (str.trim() === "[DONE]") {
+                        finalEl.textContent += "\\n";
+                        partialEl.textContent = "";
+                     }
+                  }
+               } catch (err) {
+                  log("Failed to parse incoming", err);
+               }
+            }
+
+            connectBtn.onclick = () => {
+               if (ws && ws.readyState === WebSocket.OPEN) {
+                  log("Already connected");
+                  return;
+               }
+               const url = wsUrlInput.value;
+               log("Connecting", url);
+               ws = new WebSocket(url);
+
+               ws.binaryType = "arraybuffer";
+
+               ws.onopen = () => {
+                  log("WS open");
+                  setStatus(true);
+                  // send a control message to create a session if your server expects it
+                  // adjust message shape to your backend expectation (start/session etc.)
+                  const startMsg = {
+                     type: "start",
+                     model: "gpt-4o-mini-transcribe",
+                     audio: true,
+                     transcript: true,
+                  };
+                  ws.send(JSON.stringify(startMsg));
+                  log("Sent start control:", startMsg);
+
+                  startBtn.disabled = false;
+                  stopBtn.disabled = true;
+                  closeBtn.disabled = false;
+               };
+
+               ws.onmessage = (evt) => {
+                  const data = evt.data;
+                  handleIncomingMessage(data);
+               };
+
+               ws.onerror = (e) => {
+                  log("WS error", e);
+               };
+
+               ws.onclose = (e) => {
+                  log("WS closed", e.code, e.reason);
+                  setStatus(false);
+                  startBtn.disabled = true;
+                  stopBtn.disabled = true;
+                  closeBtn.disabled = true;
+               };
+            };
+
+            async function startMicStreaming() {
+               if (!ws || ws.readyState !== WebSocket.OPEN) {
+                  alert("WebSocket not connected");
+                  return;
+               }
+
+               // ask permission & get microphone stream
+               try {
+                  mediaStream = await navigator.mediaDevices.getUserMedia({
+                     audio: true,
+                  });
+               } catch (err) {
+                  alert(
+                     "Microphone permission denied or unavailable: " +
+                        err.message
+                  );
+                  return;
+               }
+
+               // Prefer Opus in webm (browser default). If you require PCM16, you'll need WebAudio and manual encoding.
+               const mimeTypeCandidates = [
+                  "audio/webm;codecs=opus",
+                  "audio/ogg;codecs=opus",
+                  "audio/webm",
+               ];
+               let mimeType =
+                  mimeTypeCandidates.find((t) =>
+                     MediaRecorder.isTypeSupported(t)
+                  ) || "";
+
+               try {
+                  mediaRecorder = new MediaRecorder(
+                     mediaStream,
+                     mimeType ? { mimeType } : undefined
+                  );
+               } catch (err) {
+                  log("MediaRecorder init failed", err);
+                  // fallback: audio only without specifying mime
+                  mediaRecorder = new MediaRecorder(mediaStream);
+               }
+
+               mediaRecorder.ondataavailable = (ev) => {
+                  if (
+                     ev.data &&
+                     ev.data.size > 0 &&
+                     ws &&
+                     ws.readyState === WebSocket.OPEN
+                  ) {
+                     // send raw chunk (Blob). The server should accept binary blobs.
+                     // Some backends prefer base64; this sends binary ArrayBuffer for efficiency.
+                     ev.data.arrayBuffer().then((buf) => {
+                        try {
+                           ws.send(buf);
+                        } catch (err) {
+                           log("Error sending audio chunk", err);
+                        }
+                     });
+                  }
+               };
+
+               mediaRecorder.onerror = (e) => {
+                  log("MediaRecorder error", e);
+               };
+
+               mediaRecorder.onstart = () => {
+                  log("Recorder started, mimeType=", mimeType || "default");
+                  sending = true;
+                  startBtn.disabled = true;
+                  stopBtn.disabled = false;
+               };
+
+               mediaRecorder.onstop = () => {
+                  log("Recorder stopped");
+                  sending = false;
+                  startBtn.disabled = false;
+                  stopBtn.disabled = true;
+
+                  // notify server that client finished sending
+                  try {
+                     ws.send(JSON.stringify({ type: "stop" }));
+                  } catch (e) {
+                     log("stop send failed", e);
+                  }
+               };
+
+               // start sending chunks frequently (100-250 ms recommended)
+               const timeslice = 180; // ms
+               mediaRecorder.start(timeslice);
+            }
+
+            startBtn.onclick = async () => {
+               if (!ws || ws.readyState !== WebSocket.OPEN) {
+                  alert("Connect WS first");
+                  return;
+               }
+               startBtn.disabled = true;
+               await startMicStreaming();
+            };
+
+            stopBtn.onclick = async () => {
+               if (mediaRecorder && mediaRecorder.state === "recording") {
+                  mediaRecorder.stop();
+               }
+               if (mediaStream) {
+                  mediaStream.getTracks().forEach((t) => t.stop());
+                  mediaStream = null;
+               }
+            };
+
+            closeBtn.onclick = () => {
+               if (ws) {
+                  try {
+                     ws.close(1000, "client closed");
+                  } catch (e) {}
+                  ws = null;
+                  setStatus(false);
+                  startBtn.disabled = true;
+                  stopBtn.disabled = true;
+                  closeBtn.disabled = true;
+               }
+            };
+
+            // cleanup when leaving page
+            window.addEventListener("beforeunload", () => {
+               if (mediaRecorder && mediaRecorder.state === "recording")
+                  mediaRecorder.stop();
+               if (ws)
+                  try {
+                     ws.close();
+                  } catch (e) {}
+            });
+         })();
+      </script>
+   </body>
+</html>
