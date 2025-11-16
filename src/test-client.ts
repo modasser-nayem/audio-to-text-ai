@@ -9,7 +9,7 @@ ws.on("open", () => {
    ws.send(
       JSON.stringify({
          type: "start",
-         model: "gpt-4o-realtime-preview",
+         model: "gpt-4o-mini-transcribe",
          audio: { sample_rate: 16000 },
       })
    );

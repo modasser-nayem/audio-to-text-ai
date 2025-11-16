@@ -1,0 +1,228 @@
+<!-- Save as frontend/voice.html and open with Live Server -->
+<!DOCTYPE html>
+<html>
+   <head>
+      <meta charset="utf-8" />
+      <title>Live Voice → Realtime</title>
+      <meta
+         name="viewport"
+         content="width=device-width,initial-scale=1"
+      />
+      <style>
+         body {
+            font-family: Arial;
+            max-width: 720px;
+            margin: 18px auto;
+            padding: 12px;
+         }
+         button {
+            padding: 8px 12px;
+            margin-right: 6px;
+         }
+         #partial {
+            color: #0b66ff;
+            font-weight: 600;
+            min-height: 24px;
+         }
+         #final {
+            margin-top: 12px;
+            white-space: pre-wrap;
+            border: 1px solid #eee;
+            padding: 12px;
+            min-height: 160px;
+            background: #fafafa;
+         }
+         #log {
+            margin-top: 10px;
+            font-size: 12px;
+            max-height: 120px;
+            overflow: auto;
+            background: #fff;
+            border: 1px solid #f0f0f0;
+            padding: 8px;
+         }
+      </style>
+   </head>
+   <body>
+      <h2>Live Voice → Realtime Transcription</h2>
+      WebSocket:
+      <input
+         id="wsUrl"
+         style="width: 300px"
+         value="ws://localhost:8080/ws"
+      />
+      <button id="connectBtn">Connect</button>
+      <span id="status">Disconnected</span>
+      <p>
+         <button
+            id="startBtn"
+            disabled
+         >
+            Start
+         </button>
+         <button
+            id="stopBtn"
+            disabled
+         >
+            Stop
+         </button>
+      </p>
+
+      <div id="partial">Partial...</div>
+      <div id="final"></div>
+      <pre id="log"></pre>
+
+      <script>
+         (async () => {
+            const connectBtn = document.getElementById("connectBtn");
+            const startBtn = document.getElementById("startBtn");
+            const stopBtn = document.getElementById("stopBtn");
+            const status = document.getElementById("status");
+            const partial = document.getElementById("partial");
+            const finalEl = document.getElementById("final");
+            const log = document.getElementById("log");
+            const wsUrl = document.getElementById("wsUrl");
+
+            let ws = null;
+            let audioCtx = null;
+            let proc = null;
+            let micStream = null;
+            let sending = false;
+
+            function l(...a) {
+               console.log(...a);
+               log.textContent +=
+                  a
+                     .map((x) =>
+                        typeof x === "string" ? x : JSON.stringify(x)
+                     )
+                     .join(" ") + "\n";
+               log.scrollTop = log.scrollHeight;
+            }
+
+            function floatTo16BitPCM(float32Array) {
+               const buffer = new ArrayBuffer(float32Array.length * 2);
+               const view = new DataView(buffer);
+               let offset = 0;
+               for (let i = 0; i < float32Array.length; i++, offset += 2) {
+                  let s = Math.max(-1, Math.min(1, float32Array[i]));
+                  view.setInt16(offset, s < 0 ? s * 0x8000 : s * 0x7fff, true);
+               }
+               return buffer;
+            }
+
+            connectBtn.onclick = () => {
+               if (ws && ws.readyState === WebSocket.OPEN) return;
+               ws = new WebSocket(wsUrl.value);
+               ws.binaryType = "arraybuffer";
+               ws.onopen = () => {
+                  l("WS open");
+                  status.textContent = "Connected";
+                  startBtn.disabled = false;
+                  stopBtn.disabled = true;
+                  ws.send(
+                     JSON.stringify({
+                        type: "start",
+                        model: "gpt-4o-transcribe",
+                        audio: true,
+                        transcript: true,
+                     })
+                  );
+               };
+               ws.onmessage = (evt) => {
+                  const data =
+                     typeof evt.data === "string"
+                        ? evt.data
+                        : new TextDecoder().decode(evt.data);
+                  try {
+                     const obj = JSON.parse(data);
+                     if (
+                        obj?.type === "transcript.delta" ||
+                        obj?.type === "transcript.partial"
+                     ) {
+                        partial.textContent = obj?.delta ?? obj?.partial ?? "";
+                     } else if (
+                        obj?.type === "transcript.final" ||
+                        obj?.type === "final"
+                     ) {
+                        finalEl.textContent +=
+                           (obj?.transcript ?? obj?.text ?? "") + "\n";
+                        partial.textContent = "";
+                     } else {
+                        l("AI MSG", obj);
+                     }
+                  } catch (e) {
+                     l("non-json message", data);
+                  }
+               };
+               ws.onerror = (e) => l("WS error", e);
+               ws.onclose = (e) => {
+                  l("WS closed", e.code, e.reason);
+                  status.textContent = "Disconnected";
+                  startBtn.disabled = true;
+                  stopBtn.disabled = true;
+               };
+            };
+
+            startBtn.onclick = async () => {
+               if (!ws || ws.readyState !== WebSocket.OPEN) {
+                  alert("Connect websocket first");
+                  return;
+               }
+               micStream = await navigator.mediaDevices.getUserMedia({
+                  audio: true,
+               });
+               audioCtx = new AudioContext({ sampleRate: 24000 });
+               const src = audioCtx.createMediaStreamSource(micStream);
+               proc = audioCtx.createScriptProcessor(4096, 1, 1);
+               src.connect(proc);
+               proc.connect(audioCtx.destination);
+
+               proc.onaudioprocess = (e) => {
+                  if (!sending) return;
+                  const float32 = e.inputBuffer.getChannelData(0);
+                  const pcmBuffer = floatTo16BitPCM(float32);
+                  try {
+                     ws.send(pcmBuffer);
+                  } catch (err) {
+                     l("send error", err);
+                  }
+               };
+
+               sending = true;
+               startBtn.disabled = true;
+               stopBtn.disabled = false;
+               l("mic started (PCM16 @24kHz sending)");
+            };
+
+            stopBtn.onclick = () => {
+               sending = false;
+               if (proc) {
+                  proc.disconnect();
+                  proc.onaudioprocess = null;
+                  proc = null;
+               }
+               if (audioCtx) {
+                  audioCtx.close();
+                  audioCtx = null;
+               }
+               if (micStream) {
+                  micStream.getTracks().forEach((t) => t.stop());
+                  micStream = null;
+               }
+
+               if (ws && ws.readyState === WebSocket.OPEN) {
+                  ws.send(
+                     JSON.stringify({ type: "input_audio_buffer.commit" })
+                  );
+                  ws.send(JSON.stringify({ type: "response.create" }));
+               }
+
+               startBtn.disabled = false;
+               stopBtn.disabled = true;
+               l("mic stopped");
+            };
+         })();
+      </script>
+   </body>
+</html>

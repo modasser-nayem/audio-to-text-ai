@@ -1,13 +1,13 @@
-import { config } from "../config";
 import WebSocket from "ws";
+import { config } from "../config";
 import { logger } from "../utils/logger";
 
-// Thin helper to open a websocket to OpenAI Realtime endpoint and manage session lifecycle.
-export function openOpenAIRealtimeSocket(sessionConfig: any) {
+/**
+ * Create a WebSocket connected to OpenAI Realtime endpoint for a given model.
+ * Caller is responsible for listening for 'open', 'message', 'close', 'error'.
+ */
+export function openOpenAIRealtimeSocket(model: string) {
    if (!config.openaiApiKey) throw new Error("OPENAI_API_KEY not set");
-
-   // Official endpoint pattern: wss://api.openai.com/v1/realtime?model=... (verify in docs)
-   const model = "gpt-4o-realtime-preview"; //|| sessionConfig.model || "gpt-4o-realtime-preview";
    const url = `wss://api.openai.com/v1/realtime?model=${encodeURIComponent(
       model
    )}`;
