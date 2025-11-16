@@ -6,6 +6,7 @@ import { config } from "./config";
 import { logger } from "./utils/logger";
 import { setupWsProxy } from "./wsProxy";
 import { apiLimiter } from "./middleware/rateLimiter";
+import { setupElevenLabsWsProxy } from "./elevenlabsWs";
 
 const app = express();
 app.use(helmet());
@@ -18,7 +19,8 @@ app.use(apiLimiter);
 app.get("/health", (req, res) => res.json({ status: "ok" }));
 
 const server = http.createServer(app);
-setupWsProxy(server);
+// setupWsProxy(server);
+setupElevenLabsWsProxy(server);
 
 server.listen(config.port, () => {
    logger.info(`Server listening on ${config.port}`);
